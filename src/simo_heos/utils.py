@@ -1,4 +1,4 @@
-import socket
+import sys, traceback, socket
 import requests
 from bs4 import BeautifulSoup
 
@@ -32,6 +32,7 @@ def discover_heos_devices(timeout=5):
     except socket.timeout:
         pass  # Discovery timeout
 
+    fully_discovered = []
     for device in devices:
         for line in device['discovery_info'].splitlines():
             if line.startswith('LOCATION'):
@@ -49,9 +50,15 @@ def discover_heos_devices(timeout=5):
                     soup = BeautifulSoup(resp.content, 'lxml')
                 except:
                     continue
-                device['info_soup'] = soup
-                device['uid'] = soup.find('udn').text.strip().strip('uuid:').strip()
-                device['name'] = soup.find('friendlyName').text.strip()
+                try:
+                    device['uid'] = soup.findAll('udn')[0].text.strip().strip(
+                        'uuid:').strip()
+                    device['name'] = soup.findAll('friendlyname')[
+                        0].text.strip()
+                except:
+                    print(traceback.format_exc(), file=sys.stderr)
+                    continue
+                fully_discovered.append(device)
 
-    return devices
+    return fully_discovered
 

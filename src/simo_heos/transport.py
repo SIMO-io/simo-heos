@@ -1,4 +1,4 @@
-import telnetlib, json, sys, traceback
+import telnetlib, json, sys, traceback, time, threading
 from queue import Queue
 from urllib.parse import parse_qs
 
@@ -12,6 +12,8 @@ class HEOSDeviceTransporter:
         self.buffer = Queue(maxsize=100)
         self.in_cmd = False
         self.authorized = False
+        self.username = None
+        self.password = None
         self.cmd(f'heos://system/register_for_change_events?enable=on')
 
 
@@ -75,7 +77,10 @@ class HEOSDeviceTransporter:
 
 
     def authorize(self, username, password):
-        resp = self.cmd(f'heos://system/sign_in?un={username}&pw={password}')
+        self.authorized = False
+        self.username = None
+        self.password = None
+        self.cmd(f'heos://system/sign_in?un={username}&pw={password}')
 
 
     def __del__(self):

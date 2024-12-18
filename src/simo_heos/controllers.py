@@ -7,4 +7,6 @@ class HeosPlayer(BaseAudioPlayer):
     gateway_class = HEOSGatewayHandler
     name = "HEOS Player"
     config_form = HEOSPlayerConfigForm
-    manual_add = False
+    manual_add = True
+
+

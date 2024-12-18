@@ -14,7 +14,10 @@ class HeosDevice(models.Model):
     password = models.CharField("HEOS account password", blank=True, null=True)
 
 
-class HeosPlayer(models.Model):
+class HPlayer(models.Model):
     device = models.ForeignKey(HeosDevice, on_delete=models.CASCADE)
     name = models.CharField()
     pid = models.IntegerField()
+
+    def __str__(self):
+        return f"[{self.pid}] {self.name}"
