@@ -44,7 +44,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 print(traceback.format_exc(), file=sys.stderr)
                 self.transporters.pop(d_info['uid'])
                 continue
-            if not resp or resp['status'] != 'success':
+            if not resp or resp.status != 'success':
                 print(f"Bad respponse: {resp}")
                 continue
 
@@ -56,7 +56,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             )
             active_devices.append(heos_device.id)
 
-            for player_info in resp['payload']:
+            for player_info in resp.payload:
                 player, new = HPlayer.objects.update_or_create(
                     device=heos_device, pid=player_info['pid'],
                     defaults={'name': player_info['name']}
@@ -89,9 +89,11 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 component.config.get('password')]
             ):
                 continue
-            hplayer = HPlayer.objects.get(
+            hplayer = HPlayer.objects.filter(
                 id=component.config['hplayer']
-            ).select_related('device')
+            ).select_related('device').first()
+            if not hplayer:
+                continue
             authorize_transports[hplayer.device] = {
                 'un': component.config.get('username'),
                 'pw': component.config.get('password')
@@ -100,7 +102,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
         for device, credentials in authorize_transports.items():
             transport = self.transporters[device.uid]
             resp = transport.cmd('heos://system/check_account')
-            if not resp or resp['status'] != 'success':
+            if not resp or resp.status != 'success':
                 continue
             signed_in_user = resp.values.get('un')
             if signed_in_user == credentials['un']:
@@ -140,7 +142,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 f"heos://player/set_volume?pid={hplayer.pid}"
                 f"&level={value['set_volume']}"
             )
-            if resp and resp['status'] == 'success':
+            if resp and resp.status == 'success':
                 component.meta['volume'] = value['set_volume']
                 component.save()
 
@@ -148,7 +150,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             resp = transport.cmd(
                 'heos://player/get_play_mode?pid={hplayer.pid}'
             )
-            if not resp or resp['status'] != 'success':
+            if not resp or resp.status != 'success':
                 return
             component.meta['shuffle'] = resp.values.get('shuffle') != 'off'
             component.meta['loop'] = resp.values.get('repeat') != 'off'
@@ -157,7 +159,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 f"&repeat={'on_all' if component.meta['loop'] else 'off'}"
                 f"&shuffle={'on' if component.meta['shuffle'] else 'off'}"
             )
-            if resp and resp['status'] == 'success':
+            if resp and resp.status == 'success':
                 component.meta['loop'] = value['loop']
             component.save()
 
@@ -165,7 +167,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             resp = transport.cmd(
                 'heos://player/get_play_mode?pid={hplayer.pid}'
             )
-            if not resp or resp['status'] != 'success':
+            if not resp or resp.status != 'success':
                 return
             component.meta['shuffle'] = resp.values.get('shuffle') != 'off'
             component.meta['loop'] = resp.values.get('repeat') != 'off'
@@ -174,7 +176,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 f"&repeat={'on_all' if component.meta['loop'] else 'off'}"
                 f"&shuffle={'on' if component.meta['shuffle'] else 'off'}"
             )
-            if resp and resp['status'] == 'success':
+            if resp and resp.status == 'success':
                 component.meta['shuffle'] = value['shuffle']
             component.save()
 

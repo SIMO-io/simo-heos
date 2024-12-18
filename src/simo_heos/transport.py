@@ -3,6 +3,19 @@ from queue import Queue
 from urllib.parse import parse_qs
 
 
+class HEOSResponse:
+
+    def __init__(self, status, msg, values, payload):
+        self.status = status
+        self.msg = msg
+        self.values = values
+        self.payload = payload
+
+    def __str__(self):
+        return f"HEOS RESPONSE STATUS: {self.status}\nMSG: {self.msg}" \
+               f"\nVALUES: {self.values}\nPAYLOAD: {self.payload}"
+
+
 class HEOSDeviceTransporter:
 
     def __init__(self, ip, uid):
@@ -56,24 +69,21 @@ class HEOSDeviceTransporter:
         try:
             values = parse_qs(data['heos']['message'])
             for key, val in values.items():
-                values[key] = val[0]
                 try:
-                    values[key] = float(values[key])
+                    values[key] = float(val[0])
                 except:
                     try:
-                        values[key] = int(values[key])
+                        values[key] = int(val[0])
                     except:
-                        pass
+                        values[key] = val[0]
         except:
             values = {}
 
 
-        return {
-            'status': data['heos']['result'],
-            'msg': data['heos']['message'],
-            'values': values,
-            'payload': data.get('payload')
-        }
+        return HEOSResponse(
+            data['heos']['result'], data['heos']['message'],
+            values, data.get('payload')
+        )
 
 
     def authorize(self, username, password):

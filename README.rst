@@ -1,5 +1,5 @@
 =================================
-SONOS integration for SIMO.io
+DENNON HEOS integration for SIMO.io Smart Home
 =================================
 
 
