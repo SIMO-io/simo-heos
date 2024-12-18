@@ -120,9 +120,9 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
     def perform_value_send(self, component, value):
         print(f"{component}: {value}!")
 
-        hplayer = HPlayer.objects.get(
+        hplayer = HPlayer.objects.select_related('device').get(
             id=component.config['hplayer']
-        ).select_related('device')
+        )
         transport = self.transporters[hplayer.device.uid]
 
 
