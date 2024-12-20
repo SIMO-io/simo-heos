@@ -14,13 +14,14 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
 
     periodic_tasks = (
         ('discover_devices', 60),
-        #('watch_players', 1)
+        ('read_transport_buffers', 1)
     )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.transporters = {}
         self.player_transporters = {}
+        self.player_interrupts = {}
 
     def discover_devices(self):
         from .controllers import HeosPlayer
@@ -69,6 +70,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 ):
                     comp.alive = True
                     comp.save()
+                self.update_now_playing_media(transporter, player.pid)
 
             for comp in Component.objects.filter(
                 controller_uid=HeosPlayer.uid, alive=True
@@ -100,7 +102,9 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             }
 
         for device, credentials in authorize_transports.items():
-            transport = self.transporters[device.uid]
+            transport = self.transporters.get(device.uid)
+            if not transport:
+                continue
             resp = transport.cmd('heos://system/check_account')
             if not resp or resp.status != 'success':
                 continue
@@ -124,7 +128,6 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             id=component.config['hplayer']
         )
         transport = self.transporters[hplayer.device.uid]
-
 
         if value in ('play', 'pause', 'stop'):
             transport.cmd(
@@ -179,6 +182,133 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             if resp and resp.status == 'success':
                 component.meta['shuffle'] = value['shuffle']
             component.save()
+
+        if 'play_alert' in value:
+
+            resp = transport.cmd(
+                f"heos://player/set_play_state?pid={hplayer.pid}&state=stop"
+            )
+            if not resp or resp.status != 'success':
+                return
+
+            # save current state if nothing is saved
+            if hplayer.pid not in self.player_interrupts:
+                resp = transport.cmd(
+                    f'heos://player/get_now_playing_media?pid={hplayer.pid}'
+                )
+                if resp and resp.status == 'success':
+                    resp.payload.update({
+                        'volume': component.meta['volume'],
+                        'shuffle': component.meta['shuffle'],
+                        'loop': component.meta['loop']
+                    })
+                    self.player_interrupts[hplayer.pid] = resp.payload
+
+
+            if value.get('volume'):
+                component.meta['volume'] = value['set_volume']
+                resp = transport.cmd(
+                    f"heos://player/set_volume?pid={hplayer.pid}"
+                    f"&level={value['volume']}"
+                )
+                if resp and resp.status == 'success':
+                    pass
+
+
+            component.meta['loop'] = value.get('loop', False)
+            resp = transport.cmd(
+                f"heos://player/set_play_mode?pid={hplayer.pid}"
+                f"&repeat={'on_all' if component.meta['loop'] else 'off'}"
+                f"&shuffle={'on' if component.meta['shuffle'] else 'off'}"
+            )
+            if resp and resp.status == 'success':
+                component.meta['loop'] = value['loop']
+
+            component.save()
+
+
+    def get_player_components(self, device_uid, pid=None):
+        from .controllers import HeosPlayer
+        hplayers = HPlayer.objects.filter(device__uid=device_uid)
+        if pid:
+            hplayers = hplayers.filter(pid=pid)
+        hplayer_ids = [hp.id for hp in hplayers]
+        return Component.objects.filter(
+            controller_uid=HeosPlayer.uid, config__hplayer__in=hplayer_ids
+        )
+
+    def read_transport_buffers(self):
+        for uid, transport in self.transporters.items():
+            transport.receive()
+            while transport.buffer.qsize():
+                data = transport.buffer.get()
+                print(f"DATA RECEIVED from {uid}: {data}")
+                try:
+                    self.receive_event(transport, data)
+                except:
+                    print(traceback.format_exc(), file=sys.stderr)
+                    continue
+
+
+    def update_now_playing_media(self, transport, player_pid):
+        resp = transport.cmd(
+            f'heos://player/get_now_playing_media?pid={player_pid}'
+        )
+        if not resp or resp.status != 'success':
+            return
+        for comp in self.get_player_components(transport.uid, player_pid):
+            title = []
+            if resp.payload.get('type') == 'station':
+                if resp.payload.get('station'):
+                    title.append(resp.payload.get('station'))
+            if resp.payload.get('song'):
+                title.append(resp.payload.get('song'))
+            if resp.payload.get('artist'):
+                title.append(resp.payload.get('artist'))
+
+            if not title:
+                if resp.payload.get('album'):
+                    title.append(resp.payload.get('album'))
+
+            if not title:
+                if resp.payload.get('album_id'):
+                    title.append(resp.payload.get('album_id'))
+
+            if not title:
+                if resp.payload.get('mid'):
+                    title.append(resp.payload.get('mid'))
+
+            comp.meta['title'] = ' - '.join(title)
+
+            comp.meta['image_url'] = resp.payload.get('image_url')
+            comp.save()
+
+
+    def receive_event(self, transport, data):
+        values = transport.parse_values(data)
+        command = data['heos']['command']
+        if command == 'system/sign_in':
+            if data['heos']['result'] == 'fail':
+                for comp in self.get_player_components(transport.uid):
+                    comp.error_msg = f"Sign In error: Cannot connect to Web Services"
+                    comp.save()
+            elif data['heos']['result'] == 'success':
+                for comp in self.get_player_components(transport.uid):
+                    comp.error_msg = None
+                    comp.save()
+        if command == 'event/player_now_playing_progress':
+            for comp in self.get_player_components(transport.uid, values['pid']):
+                comp.meta['position'] = values['cur_pos']
+                comp.meta['duration'] = values['duration']
+                comp.save()
+        elif command == 'event/player_state_changed':
+            states_map = {
+                'stop': 'stopped', 'play': 'playing', 'pause': 'paused'
+            }
+            for comp in self.get_player_components(transport.uid, values['pid']):
+                comp.set(states_map.get(values['state']))
+        elif command == 'event/player_now_playing_changed':
+            self.update_now_playing_media(transport, values['pid'])
 
 
 

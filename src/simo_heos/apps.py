@@ -13,8 +13,12 @@ class SIMOHEOSAppConfig(AppConfig):
 
         from simo.core.models import Gateway
 
-        gw, new = Gateway.objects.get_or_create(
-            type='simo_heos.gateways.HEOSGatewayHandler'
-        )
+        # database might be not intiated yet
+        try:
+            gw, new = Gateway.objects.get_or_create(
+                type='simo_heos.gateways.HEOSGatewayHandler'
+            )
+        except:
+            return
         if new:
             gw.start()
