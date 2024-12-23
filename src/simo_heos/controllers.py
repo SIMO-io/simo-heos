@@ -9,4 +9,8 @@ class HeosPlayer(BaseAudioPlayer):
     config_form = HEOSPlayerConfigForm
     manual_add = True
 
+    def zm(self, on):
+        self.send({"ZM": on})
 
+    def z2(self, on):
+        self.send({"Z2": on})

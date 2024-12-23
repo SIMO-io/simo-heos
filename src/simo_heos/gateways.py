@@ -1,8 +1,9 @@
-import sys, traceback
+import sys, traceback, time, threading
 from simo.core.gateways import BaseObjectCommandsGatewayHandler
 from simo.core.forms import BaseGatewayForm
 from simo.core.middleware import drop_current_instance
 from simo.core.models import Component
+from simo.core.utils.helpers import get_self_ip
 from .utils import discover_heos_devices
 from .transport import HEOSDeviceTransporter
 from .models import HeosDevice, HPlayer
@@ -16,12 +17,17 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
         ('discover_devices', 60),
         ('read_transport_buffers', 1)
     )
+    states_map = {
+        'stop': 'stopped', 'play': 'playing', 'pause': 'paused'
+    }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.transporters = {}
         self.player_transporters = {}
         self.player_interrupts = {}
+        self.alert_stops = {}
+        self.playing_alerts = {}
 
     def discover_devices(self):
         from .controllers import HeosPlayer
@@ -96,10 +102,16 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             ).select_related('device').first()
             if not hplayer:
                 continue
-            authorize_transports[hplayer.device] = {
-                'un': component.config.get('username'),
-                'pw': component.config.get('password')
-            }
+            if hplayer.device in authorize_transports:
+                authorize_transports[
+                    hplayer.device
+                ]['players'].append(component)
+            else:
+                authorize_transports[hplayer.device] = {
+                    'players': [component],
+                    'un': component.config.get('username'),
+                    'pw': component.config.get('password')
+                }
 
         for device, credentials in authorize_transports.items():
             transport = self.transporters.get(device.uid)
@@ -111,6 +123,13 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             signed_in_user = resp.values.get('un')
             if signed_in_user == credentials['un']:
                 print(f"{signed_in_user} is signed in on {device}.")
+                for player in credentials['players']:
+                    if not player.error_msg:
+                        continue
+                    if 'sign in' not in player.error_msg.lower():
+                        continue
+                    player.error_msg = None
+                    player.save()
                 self.update_library(device)
                 continue
             transport.authorize(credentials['un'], credentials['pw'])
@@ -141,17 +160,16 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             transport.cmd(f'heos://player/play_previous?pid={hplayer.pid}')
 
         if 'set_volume' in value:
-            resp = transport.cmd(
-                f"heos://player/set_volume?pid={hplayer.pid}"
-                f"&level={value['set_volume']}"
-            )
-            if resp and resp.status == 'success':
-                component.meta['volume'] = value['set_volume']
-                component.save()
+            volume = value['set_volume']
+            if volume > 99:
+                volume = 99
+            transport.denon_cmd(f"MV{volume:02}")
+            component.meta['volume'] = value['set_volume']
+            component.save()
 
         if 'loop' in value:
             resp = transport.cmd(
-                'heos://player/get_play_mode?pid={hplayer.pid}'
+                f'heos://player/get_play_mode?pid={hplayer.pid}'
             )
             if not resp or resp.status != 'success':
                 return
@@ -168,7 +186,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
 
         if 'shuffle' in value:
             resp = transport.cmd(
-                'heos://player/get_play_mode?pid={hplayer.pid}'
+                f'heos://player/get_play_mode?pid={hplayer.pid}'
             )
             if not resp or resp.status != 'success':
                 return
@@ -183,13 +201,20 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 component.meta['shuffle'] = value['shuffle']
             component.save()
 
-        if 'play_alert' in value:
+        if 'alert' in value:
+            if not value['alert']:
+                return self.finish_alert(transport, hplayer.pid, stop=True)
 
-            resp = transport.cmd(
-                f"heos://player/set_play_state?pid={hplayer.pid}&state=stop"
-            )
-            if not resp or resp.status != 'success':
+            alert = Component.objects.filter(id=value['alert']).first()
+            if not alert:
                 return
+
+            denon_source = 'SITV'
+            denon_resp = transport.denon_cmd('SI?', True)
+            if denon_resp:
+                for r in denon_resp:
+                    if r.startswith('SI'):
+                        denon_source = r
 
             # save current state if nothing is saved
             if hplayer.pid not in self.player_interrupts:
@@ -200,32 +225,136 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                     resp.payload.update({
                         'volume': component.meta['volume'],
                         'shuffle': component.meta['shuffle'],
-                        'loop': component.meta['loop']
+                        'loop': component.meta['loop'],
+                        'state': component.value,
+                        'SI?': denon_source
                     })
                     self.player_interrupts[hplayer.pid] = resp.payload
 
 
-            if value.get('volume'):
-                component.meta['volume'] = value['set_volume']
-                resp = transport.cmd(
-                    f"heos://player/set_volume?pid={hplayer.pid}"
-                    f"&level={value['volume']}"
-                )
-                if resp and resp.status == 'success':
-                    pass
+            resp = transport.cmd(
+                f"heos://player/set_play_state?pid={hplayer.pid}&state=stop"
+            )
+            if not resp or resp.status != 'success':
+                return
 
-
-            component.meta['loop'] = value.get('loop', False)
             resp = transport.cmd(
                 f"heos://player/set_play_mode?pid={hplayer.pid}"
-                f"&repeat={'on_all' if component.meta['loop'] else 'off'}"
+                f"&repeat={'on_one' if alert.config.get('loop', False) else 'off'}"
                 f"&shuffle={'on' if component.meta['shuffle'] else 'off'}"
             )
             if resp and resp.status == 'success':
-                component.meta['loop'] = value['loop']
+                component.meta['loop'] = alert.config['loop']
+
+            if denon_source != 'SINET':
+                transport.denon_cmd(f"MUON")
+                time.sleep(0.5)
+                transport.denon_cmd(f"SINET")
+                time.sleep(0.5)
+                transport.denon_cmd(f"MUOFF")
+                time.sleep(0.5)
+
+            volume = alert.config['volume']
+            if volume > 99:
+                volume = 99
+            print("SET VOLUME TO: ", f"MV{volume:02}")
+            transport.denon_cmd(f"MV{volume:02}")
+            component.meta['volume'] = alert.config['volume']
+
+            url = f"http://{get_self_ip()}{alert.config['stream_url']}"
+            #url = f"http://192.168.0.106:8000{alert.config['stream_url']}"
+            print("PLAY URL: ", url)
+            start = time.time()
+            transport.cmd(
+                f"heos://browse/play_stream?pid={hplayer.pid}&url={url}"
+            )
+            # stupid denons accepts volume only after stream starts playing
+            # so we force volume change for 3 seconds 6 times!!!
+            for i in range(6):
+                transport.denon_cmd(f"MV{volume:02}")
+                time.sleep(0.5)
+
 
             component.save()
 
+
+            if f"{transport.uid}_{hplayer.pid}" in self.playing_alerts:
+                self.playing_alerts[
+                    f"{transport.uid}_{hplayer.pid}"
+                ]['comp'].set(False)
+
+            self.playing_alerts[f"{transport.uid}_{hplayer.pid}"] = {
+                'comp': alert, 'start': start
+            }
+            alert.set(True)
+            if not alert.config['loop']:
+                # Alert should get finished by events stream
+                # however it that fails, we do it with the timer +20s later
+                # than estimated duration of a sound
+                finish_timer = threading.Timer(
+                    alert.config['duration'] + 20, self.finish_alert,
+                    args=[transport, hplayer.pid]
+                )
+                finish_timer.start()
+                self.playing_alerts[
+                    f"{transport.uid}_{hplayer.pid}"
+                ]['finish_timer'] = finish_timer
+
+    def finish_alert(self, transport, h_pid, stop=False):
+        if f"{transport.uid}_{h_pid}" not in self.playing_alerts:
+            return
+        if stop:
+            transport.cmd(
+                f"heos://player/set_play_state?pid={h_pid}&state=stop"
+            )
+        comp = self.playing_alerts[f"{transport.uid}_{h_pid}"]['comp']
+        start = self.playing_alerts[f"{transport.uid}_{h_pid}"]['start']
+        finish_timer = self.playing_alerts[
+            f"{transport.uid}_{h_pid}"
+        ].get('finish_timer')
+        if not stop and time.time() - start < comp.config['duration']:
+            # false trigger from events stream
+            return
+        if comp.config['loop'] and not stop:
+            # false trigger from events stream
+            return
+        comp.set(False)
+        if finish_timer:
+            finish_timer.cancel()
+        self.playing_alerts.pop(f"{transport.uid}_{h_pid}")
+        transport.cmd(f"heos://player/remove_from_queue?pid={h_pid}&qid={1}")
+        if h_pid in self.player_interrupts:
+            transport.cmd(
+                f"heos://player/set_volume?pid={h_pid}"
+                f"&level={self.player_interrupts[h_pid]['volume']}"
+            )
+            loop = self.player_interrupts[h_pid]['loop']
+            shuffle = self.player_interrupts[h_pid]['shuffle']
+            transport.cmd(
+                f"heos://player/set_play_mode?pid={h_pid}"
+                f"&repeat={'on_all' if loop else 'off'}"
+                f"&shuffle={'on' if shuffle else 'off'}"
+            )
+            volume = self.player_interrupts[h_pid]['volume']
+            transport.denon_cmd(f"MV{volume:02}")
+            time.sleep(1)
+            if 'SI?' != 'SINET':
+                transport.denon_cmd(self.player_interrupts[h_pid]['SI?'])
+                time.sleep(0.5)
+                transport.denon_cmd(self.player_interrupts[h_pid]['SI?'])
+                time.sleep(0.5)
+                # stupid denons sometimes doesn't accept volume change
+                # after source change, so we force it 6 times in 3 seconds
+                for i in range(6):
+                    transport.denon_cmd(f"MV{volume:02}")
+                    time.sleep(0.5)
+
+            if self.player_interrupts[h_pid]['state'] == 'playing':
+                print("RESUME PLAYING: ", self.player_interrupts)
+
+            self.player_interrupts.pop(h_pid)
+
+        self.update_now_playing_media(transport, h_pid)
 
     def get_player_components(self, device_uid, pid=None):
         from .controllers import HeosPlayer
@@ -252,36 +381,62 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
 
     def update_now_playing_media(self, transport, player_pid):
         resp = transport.cmd(
+            f"heos://player/get_play_state?pid={player_pid}"
+        )
+        if not resp or resp.status != 'success':
+            return
+        player_state = self.states_map.get(resp.values['state'])
+        mode = transport.cmd(
+            f'heos://player/get_play_mode?pid={player_pid}'
+        )
+        if not mode or mode.status != 'success':
+            return
+
+        volume = None
+        denon_resp = transport.denon_cmd('MV?', True)
+        if denon_resp:
+            for r in denon_resp:
+                if r.startswith('MV'):
+                    try:
+                        volume = int(r[2:])
+                    except:
+                        pass
+                    break
+
+        resp = transport.cmd(
             f'heos://player/get_now_playing_media?pid={player_pid}'
         )
         if not resp or resp.status != 'success':
             return
         for comp in self.get_player_components(transport.uid, player_pid):
             title = []
+
             if resp.payload.get('type') == 'station':
                 if resp.payload.get('station'):
                     title.append(resp.payload.get('station'))
-            if resp.payload.get('song'):
-                title.append(resp.payload.get('song'))
-            if resp.payload.get('artist'):
-                title.append(resp.payload.get('artist'))
 
-            if not title:
-                if resp.payload.get('album'):
-                    title.append(resp.payload.get('album'))
-
-            if not title:
-                if resp.payload.get('album_id'):
-                    title.append(resp.payload.get('album_id'))
-
-            if not title:
-                if resp.payload.get('mid'):
-                    title.append(resp.payload.get('mid'))
+            ignore_vals = ['Url Stream']
+            for attr in ['song', 'artist', 'album', 'album_id', 'mid']:
+                v = resp.payload.get(attr)
+                if not v:
+                    continue
+                if v in ignore_vals:
+                    continue
+                if v in title:
+                    continue
+                title.append(v)
 
             comp.meta['title'] = ' - '.join(title)
-
             comp.meta['image_url'] = resp.payload.get('image_url')
+
+            comp.meta['shuffle'] = mode.values.get('shuffle') != 'off'
+            comp.meta['loop'] = mode.values.get('repeat') != 'off'
+            if volume:
+                comp.meta['volume'] = volume
+
             comp.save()
+            comp.set(player_state)
+
 
 
     def receive_event(self, transport, data):
@@ -290,7 +445,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
         if command == 'system/sign_in':
             if data['heos']['result'] == 'fail':
                 for comp in self.get_player_components(transport.uid):
-                    comp.error_msg = f"Sign In error: Cannot connect to Web Services"
+                    comp.error_msg = f"Sign In error: {data['heos']['message']}"
                     comp.save()
             elif data['heos']['result'] == 'success':
                 for comp in self.get_player_components(transport.uid):
@@ -302,13 +457,19 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 comp.meta['duration'] = values['duration']
                 comp.save()
         elif command == 'event/player_state_changed':
-            states_map = {
-                'stop': 'stopped', 'play': 'playing', 'pause': 'paused'
-            }
             for comp in self.get_player_components(transport.uid, values['pid']):
-                comp.set(states_map.get(values['state']))
+                comp.set(self.states_map.get(values['state']))
+            if values['state'] == 'stop' \
+            and f"{transport.uid}_{values['pid']}" in self.playing_alerts:
+                self.finish_alert(transport, values['pid'])
         elif command == 'event/player_now_playing_changed':
             self.update_now_playing_media(transport, values['pid'])
+            if f"{transport.uid}_{values['pid']}" in self.playing_alerts:
+                self.finish_alert(transport, values['pid'])
+        elif command == 'event/player_volume_changed':
+            for comp in self.get_player_components(transport.uid, values['pid']):
+                comp.meta['volume'] = values['level']
+                comp.save()
 
 
 

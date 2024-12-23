@@ -18,3 +18,8 @@ class HEOSPlayerConfigForm(BaseComponentForm):
         label='HEOS Player',
         queryset=HPlayer.objects.filter(device__connected=True)
     )
+
+    def clean_password(self):
+        if not self.cleaned_data.get('password'):
+            self.cleaned_data['password'] = self.instance.config.get('password')
+        return self.cleaned_data['password']
