@@ -139,6 +139,23 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
         print("Update library!")
         pass
 
+    def prepare_for_play(self, transport):
+        denon_source = 'SITV'
+        denon_resp = transport.denon_cmd('SI?', True)
+        if denon_resp:
+            for r in denon_resp:
+                if r.startswith('SI'):
+                    denon_source = r
+        if denon_source != 'SINET':
+            transport.denon_cmd(f"MUON")
+            time.sleep(0.5)
+            transport.denon_cmd(f"SINET")
+            time.sleep(0.5)
+            transport.denon_cmd(f"MUOFF")
+            time.sleep(0.5)
+
+        return denon_source
+
 
     def perform_value_send(self, component, value):
         print(f"{component}: {value}!")
@@ -219,6 +236,26 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             component.meta['Z2'] = value['Z2']
             component.save()
 
+        if 'play_uri' in value:
+            self.prepare_for_play(transport)
+
+            if 'volume' in value:
+                volume = value['volume']
+                if volume > 99:
+                    volume = 99
+                transport.denon_cmd(f"MV{volume:02}")
+            transport.cmd(
+                f"heos://browse/play_stream?pid="
+                f"{hplayer.pid}&url={value['play_uri']}"
+            )
+            if not component.get('ZM'):
+                transport.denon_cmd(f"ZMON")
+
+
+        if 'play_from_library' in value:
+            print("PLAY LIBRARY ITEM: ", value)
+
+
         if 'alert' in value:
             if not value['alert']:
                 return self.finish_alert(transport, hplayer.pid, stop=True)
@@ -233,6 +270,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 for r in denon_resp:
                     if r.startswith('SI'):
                         denon_source = r
+
 
             # save current state if nothing is saved
             if hplayer.pid not in self.player_interrupts:
@@ -249,7 +287,6 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                     })
                     self.player_interrupts[hplayer.pid] = resp.payload
 
-
             resp = transport.cmd(
                 f"heos://player/set_play_state?pid={hplayer.pid}&state=stop"
             )
@@ -263,6 +300,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             )
             if resp and resp.status == 'success':
                 component.meta['loop'] = alert.config['loop']
+
 
             if denon_source != 'SINET':
                 transport.denon_cmd(f"MUON")
@@ -295,7 +333,6 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             for i in range(6):
                 transport.denon_cmd(f"MV{volume:02}")
                 time.sleep(0.5)
-
 
             component.save()
 
