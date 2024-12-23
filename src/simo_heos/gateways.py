@@ -152,6 +152,8 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             transport.cmd(
                 f"heos://player/set_play_state?pid={hplayer.pid}&state={value}"
             )
+            # TODO: remove once integration is finished, as this is only for testing purposes
+            component.set(self.states_map[value])
 
         if 'next' in value:
             transport.cmd(f'heos://player/play_next?pid={hplayer.pid}')
@@ -199,6 +201,22 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             )
             if resp and resp.status == 'success':
                 component.meta['shuffle'] = value['shuffle']
+            component.save()
+
+        if 'ZM' in value:
+            if value['ZM']:
+                transport.denon_cmd('ZMON')
+            else:
+                transport.denon_cmd('ZMOFF')
+            component.meta['ZM'] = value['ZM']
+            component.save()
+
+        if 'Z2' in value:
+            if value['Z2']:
+                transport.denon_cmd('Z2ON')
+            else:
+                transport.denon_cmd('Z2OFF')
+            component.meta['Z2'] = value['Z2']
             component.save()
 
         if 'alert' in value:
@@ -252,6 +270,10 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 transport.denon_cmd(f"SINET")
                 time.sleep(0.5)
                 transport.denon_cmd(f"MUOFF")
+                time.sleep(0.5)
+
+            if not component.get('ZM'):
+                transport.denon_cmd(f"ZMON")
                 time.sleep(0.5)
 
             volume = alert.config['volume']
@@ -403,6 +425,28 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                         pass
                     break
 
+        ZM = True
+        denon_resp = transport.denon_cmd('ZM?')
+        if denon_resp:
+            for r in denon_resp:
+                if r.startswith('ZM'):
+                    if r == 'ZMON':
+                        ZM = True
+                    else:
+                        ZM = False
+                    break
+
+        Z2 = True
+        denon_resp = transport.denon_cmd('Z2?')
+        if denon_resp:
+            for r in denon_resp:
+                if r.startswith('Z2'):
+                    if r == 'Z2ON':
+                        Z2 = True
+                    else:
+                        Z2 = False
+                    break
+
         resp = transport.cmd(
             f'heos://player/get_now_playing_media?pid={player_pid}'
         )
@@ -431,6 +475,8 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
 
             comp.meta['shuffle'] = mode.values.get('shuffle') != 'off'
             comp.meta['loop'] = mode.values.get('repeat') != 'off'
+            comp.meta['ZM'] = ZM
+            comp.meta['Z2'] = Z2
             if volume:
                 comp.meta['volume'] = volume
 
