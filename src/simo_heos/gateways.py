@@ -65,6 +65,14 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             active_devices.append(heos_device.id)
 
             for player_info in resp.payload:
+                # This is crazy! In fact it is possible to connect to
+                # one of your HEOS enabled device and control all other
+                # players via it.
+                # It seems smart, but that's definitely not the most reliable
+                # way of communication. We prefer keeping things separated
+                # the way they naturally are.
+                if player_info['ip'] != heos_device.ip:
+                    continue
                 player, new = HPlayer.objects.update_or_create(
                     device=heos_device, pid=player_info['pid'],
                     defaults={'name': player_info['name']}

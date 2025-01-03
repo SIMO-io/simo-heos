@@ -17,7 +17,11 @@ class HeosDevice(models.Model):
 class HPlayer(models.Model):
     device = models.ForeignKey(HeosDevice, on_delete=models.CASCADE)
     name = models.CharField()
-    pid = models.IntegerField()
+    pid = models.IntegerField(db_index=True)
+
+    class Meta:
+        unique_together = 'device', 'pid'
+
 
     def __str__(self):
         return f"[{self.pid}] {self.name}"
