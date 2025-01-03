@@ -98,6 +98,8 @@ class HEOSDeviceTransporter:
                     except:
                         print(traceback.format_exc(), file=sys.stderr)
                         return
+                    if data['heos']['message'].startswith('command under process'):
+                        continue
                     if data['heos']['command'].startswith('event/'):
                         self.buffer.put(data)
                         continue
@@ -159,6 +161,7 @@ class HEOSDeviceTransporter:
             except:
                 self.denon_connection = None
                 return
+
             start = time.time()
             if expect_response:
                 if time.time() - start > 5:
@@ -173,6 +176,8 @@ class HEOSDeviceTransporter:
                         results.append(item.decode())
                 except:
                     self.denon_connection = None
+                if len(results):
+                    return results
                 return results
 
 

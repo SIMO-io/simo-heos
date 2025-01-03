@@ -1,4 +1,5 @@
 import sys, traceback, time, threading
+from collections import OrderedDict
 from simo.core.gateways import BaseObjectCommandsGatewayHandler
 from simo.core.forms import BaseGatewayForm
 from simo.core.middleware import drop_current_instance
@@ -124,20 +125,53 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             if signed_in_user == credentials['un']:
                 print(f"{signed_in_user} is signed in on {device}.")
                 for player in credentials['players']:
-                    if not player.error_msg:
+                    if player.error_msg and 'sign in' in player.error_msg.lower():
+                        player.error_msg = None
+                        player.save()
+                    try:
+                        self.update_library(transport, player)
+                    except:
+                        print(traceback.format_exc(), file=sys.stderr)
                         continue
-                    if 'sign in' not in player.error_msg.lower():
-                        continue
-                    player.error_msg = None
-                    player.save()
-                self.update_library(device)
                 continue
             transport.authorize(credentials['un'], credentials['pw'])
 
 
-    def update_library(self, device):
-        print("Update library!")
-        pass
+    def update_library(self, transport, player):
+        print(f"Update library of {player}")
+
+        current_library = OrderedDict(
+            {item['id']: item for item in player.meta.get('library', [])}
+        )
+        mentioned_ids = []
+
+        # Playlists
+        resp = transport.cmd(f'heos://browse/browse?sid=1025')
+        if not resp:
+            return
+        for item in resp.payload:
+            id = f"playlist-{item['cid']}"
+            current_library[id] = item
+            current_library[id]['id'] = id
+            mentioned_ids.append(id)
+
+        # TuneIn stations
+        resp = transport.cmd(f'heos://browse/browse?sid=1028')
+        if not resp:
+            return
+        for item in resp.payload:
+            id = f"station-{item['mid']}"
+            current_library[id] = item
+            current_library[id]['id'] = id
+            mentioned_ids.append(id)
+
+        for id in current_library.keys():
+            if id not in mentioned_ids:
+                current_library.pop(id)
+
+        player.refresh_from_db()
+        player.meta['library'] = list(current_library.values())
+        player.save()
 
     def prepare_for_play(self, transport):
         denon_source = 'SITV'
@@ -169,8 +203,6 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             transport.cmd(
                 f"heos://player/set_play_state?pid={hplayer.pid}&state={value}"
             )
-            # TODO: remove once integration is finished, as this is only for testing purposes
-            component.set(self.states_map[value])
 
         if 'next' in value:
             transport.cmd(f'heos://player/play_next?pid={hplayer.pid}')
@@ -248,13 +280,21 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 f"heos://browse/play_stream?pid="
                 f"{hplayer.pid}&url={value['play_uri']}"
             )
-            if not component.get('ZM'):
+            if not component.config.get('ZM'):
                 transport.denon_cmd(f"ZMON")
 
 
         if 'play_from_library' in value:
             print("PLAY LIBRARY ITEM: ", value)
-
+            for item in component.meta.get('library', []):
+                if item['id'] == value['play_from_library']:
+                    threading.Thread(
+                        target=self.play_library_item, daemon=True, args=(
+                            transport, hplayer.pid, component, item,
+                            value['volume'], value['fade_in']
+                        )
+                    ).start()
+                    break
 
         if 'alert' in value:
             if not value['alert']:
@@ -287,11 +327,12 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                     })
                     self.player_interrupts[hplayer.pid] = resp.payload
 
-            resp = transport.cmd(
-                f"heos://player/set_play_state?pid={hplayer.pid}&state=stop"
-            )
-            if not resp or resp.status != 'success':
-                return
+            if component.value == 'playing':
+                resp = transport.cmd(
+                    f"heos://player/set_play_state?pid={hplayer.pid}&state=stop"
+                )
+                if not resp or resp.status != 'success':
+                    return
 
             resp = transport.cmd(
                 f"heos://player/set_play_mode?pid={hplayer.pid}"
@@ -303,35 +344,35 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
 
 
             if denon_source != 'SINET':
-                transport.denon_cmd(f"MUON")
+                transport.denon_cmd(f"MUON", expect_response=False)
                 time.sleep(0.5)
-                transport.denon_cmd(f"SINET")
+                transport.denon_cmd(f"SINET", expect_response=False)
                 time.sleep(0.5)
-                transport.denon_cmd(f"MUOFF")
+                transport.denon_cmd(f"MUOFF", expect_response=False)
                 time.sleep(0.5)
 
-            if not component.get('ZM'):
-                transport.denon_cmd(f"ZMON")
+            if not any([component.config.get('ZM'), component.config.get('Z2')]):
+                transport.denon_cmd(f"ZMON", expect_response=False)
                 time.sleep(0.5)
 
             volume = alert.config['volume']
             if volume > 99:
                 volume = 99
             print("SET VOLUME TO: ", f"MV{volume:02}")
-            transport.denon_cmd(f"MV{volume:02}")
+            transport.denon_cmd(f"MV{volume:02}", expect_response=False)
             component.meta['volume'] = alert.config['volume']
 
             url = f"http://{get_self_ip()}{alert.config['stream_url']}"
-            #url = f"http://192.168.0.106:8000{alert.config['stream_url']}"
+            #url = f"http://192.168.0.121:8000{alert.config['stream_url']}"
             print("PLAY URL: ", url)
             start = time.time()
             transport.cmd(
                 f"heos://browse/play_stream?pid={hplayer.pid}&url={url}"
             )
             # stupid denons accepts volume only after stream starts playing
-            # so we force volume change for 3 seconds 6 times!!!
-            for i in range(6):
-                transport.denon_cmd(f"MV{volume:02}")
+            # so we force volume change for 2 seconds 4 times!!!
+            for i in range(4):
+                transport.denon_cmd(f"MV{volume:02}", expect_response=False)
                 time.sleep(0.5)
 
             component.save()
@@ -381,8 +422,13 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
         if finish_timer:
             finish_timer.cancel()
         self.playing_alerts.pop(f"{transport.uid}_{h_pid}")
-        transport.cmd(f"heos://player/remove_from_queue?pid={h_pid}&qid={1}")
+
+        transport.cmd(
+            f"heos://player/remove_from_queue?pid={h_pid}&qid=1"
+        )
+
         if h_pid in self.player_interrupts:
+
             transport.cmd(
                 f"heos://player/set_volume?pid={h_pid}"
                 f"&level={self.player_interrupts[h_pid]['volume']}"
@@ -410,6 +456,19 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
 
             if self.player_interrupts[h_pid]['state'] == 'playing':
                 print("RESUME PLAYING: ", self.player_interrupts)
+                if self.player_interrupts[h_pid].get('sid') == 3:
+                    mid = self.player_interrupts[h_pid].get('album_id', '0')
+                    name = self.player_interrupts[h_pid].get('station', '-')
+                    transport.cmd(
+                        f"heos://browse/play_stream?pid={h_pid}&sid=3"
+                        f"&cid=1&mid={mid}&name={name}"
+                    )
+                elif self.player_interrupts[h_pid].get('qid'):
+                    qid = self.player_interrupts[h_pid].get('qid')
+                    transport.cmd(
+                        f"heos://player/play_queue?pid={h_pid}&qid={qid}"
+                    )
+
 
             self.player_interrupts.pop(h_pid)
 
@@ -430,7 +489,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             transport.receive()
             while transport.buffer.qsize():
                 data = transport.buffer.get()
-                print(f"DATA RECEIVED from {uid}: {data}")
+                #print(f"DATA RECEIVED from {uid}: {data}")
                 try:
                     self.receive_event(transport, data)
                 except:
@@ -519,6 +578,68 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
 
             comp.save()
             comp.set(player_state)
+
+
+    def play_library_item(
+        self, transport, pid, component, item, volume=None, fade_in=None
+    ):
+        if component.value == 'playing':
+            transport.cmd(
+                f"heos://player/set_play_state?pid={pid}&state=stopped"
+            )
+        denon_source = 'SITV'
+        denon_resp = transport.denon_cmd('SI?', True)
+        if denon_resp:
+            for r in denon_resp:
+                if r.startswith('SI'):
+                    denon_source = r
+
+        if denon_source != 'SINET':
+            transport.denon_cmd(f"MUON", expect_response=False)
+            time.sleep(0.5)
+            transport.denon_cmd(f"SINET", expect_response=False)
+            time.sleep(0.5)
+            transport.denon_cmd(f"MUOFF", expect_response=False)
+            time.sleep(0.5)
+
+        if not any([component.config.get('ZM'), component.config.get('Z2')]):
+            transport.denon_cmd(f"ZMON", expect_response=False)
+            time.sleep(0.5)
+
+        current_volume = volume
+        if fade_in:
+            current_volume = 0
+        if volume:
+            transport.denon_cmd(f"MV{current_volume:02}", expect_response=False)
+
+        if item['type'] == 'station':
+            transport.cmd(
+                f"heos://browse/play_stream?pid={pid}&sid=3"
+                f"&cid=1&mid={item['mid']}&name={item['name']}"
+            )
+        if item['type'] == 'playlist':
+            transport.cmd(f"heos://player/clear_queue?pid={pid}")
+            transport.cmd(
+                f"heos://browse/add_to_queue?pid={pid}&sid=1025"
+                f"&cid={item['cid']}&aid=1"
+            )
+
+        if fade_in:
+            fade_step = volume / (fade_in * 4)
+            for i in range(fade_in * 4):
+                current_volume = int((i + 1) * fade_step)
+                transport.denon_cmd(
+                    f"MV{current_volume:02}", expect_response=False
+                )
+                time.sleep(0.25)
+        elif volume:
+            for i in range(2):
+                transport.denon_cmd(
+                    f"MV{current_volume:02}", expect_response=False
+                )
+                time.sleep(0.5)
+
+
 
 
 
