@@ -161,6 +161,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             id = f"playlist-{item['cid']}"
             current_library[id] = item
             current_library[id]['id'] = id
+            current_library[id]['title'] = item.get('name')
             mentioned_ids.append(id)
 
         # TuneIn stations
@@ -171,6 +172,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             id = f"station-{item['mid']}"
             current_library[id] = item
             current_library[id]['id'] = id
+            current_library[id]['title'] = item.get('name')
             mentioned_ids.append(id)
 
         for id in current_library.keys():
@@ -288,7 +290,9 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 f"heos://browse/play_stream?pid="
                 f"{hplayer.pid}&url={value['play_uri']}"
             )
-            if not component.config.get('ZM'):
+            if not any(
+                [component.config.get('ZM'), component.config.get('Z2')]
+            ):
                 transport.denon_cmd(f"ZMON")
 
 
@@ -352,22 +356,22 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
 
 
             if denon_source != 'SINET':
-                transport.denon_cmd(f"MUON", expect_response=False)
+                transport.denon_cmd(f"MUON")
                 time.sleep(0.5)
-                transport.denon_cmd(f"SINET", expect_response=False)
+                transport.denon_cmd(f"SINET")
                 time.sleep(0.5)
-                transport.denon_cmd(f"MUOFF", expect_response=False)
+                transport.denon_cmd(f"MUOFF")
                 time.sleep(0.5)
 
             if not any([component.config.get('ZM'), component.config.get('Z2')]):
-                transport.denon_cmd(f"ZMON", expect_response=False)
+                transport.denon_cmd(f"ZMON")
                 time.sleep(0.5)
 
             volume = alert.config['volume']
             if volume > 99:
                 volume = 99
             print("SET VOLUME TO: ", f"MV{volume:02}")
-            transport.denon_cmd(f"MV{volume:02}", expect_response=False)
+            transport.denon_cmd(f"MV{volume:02}")
             component.meta['volume'] = alert.config['volume']
 
             url = f"http://{get_self_ip()}{alert.config['stream_url']}"
@@ -380,7 +384,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             # stupid denons accepts volume only after stream starts playing
             # so we force volume change for 2 seconds 4 times!!!
             for i in range(4):
-                transport.denon_cmd(f"MV{volume:02}", expect_response=False)
+                transport.denon_cmd(f"MV{volume:02}")
                 time.sleep(0.5)
 
             component.save()
@@ -530,7 +534,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                     break
 
         ZM = True
-        denon_resp = transport.denon_cmd('ZM?')
+        denon_resp = transport.denon_cmd('ZM?', True)
         if denon_resp:
             for r in denon_resp:
                 if r.startswith('ZM'):
@@ -540,8 +544,8 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                         ZM = False
                     break
 
-        Z2 = True
-        denon_resp = transport.denon_cmd('Z2?')
+        Z2 = False
+        denon_resp = transport.denon_cmd('Z2?', True)
         if denon_resp:
             for r in denon_resp:
                 if r.startswith('Z2'):
@@ -603,22 +607,22 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                     denon_source = r
 
         if denon_source != 'SINET':
-            transport.denon_cmd(f"MUON", expect_response=False)
+            transport.denon_cmd(f"MUON")
             time.sleep(0.5)
-            transport.denon_cmd(f"SINET", expect_response=False)
+            transport.denon_cmd(f"SINET")
             time.sleep(0.5)
-            transport.denon_cmd(f"MUOFF", expect_response=False)
+            transport.denon_cmd(f"MUOFF")
             time.sleep(0.5)
 
         if not any([component.config.get('ZM'), component.config.get('Z2')]):
-            transport.denon_cmd(f"ZMON", expect_response=False)
+            transport.denon_cmd(f"ZMON")
             time.sleep(0.5)
 
         current_volume = volume
         if fade_in:
             current_volume = 0
         if volume:
-            transport.denon_cmd(f"MV{current_volume:02}", expect_response=False)
+            transport.denon_cmd(f"MV{current_volume:02}")
 
         if item['type'] == 'station':
             transport.cmd(
@@ -636,19 +640,12 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             fade_step = volume / (fade_in * 4)
             for i in range(fade_in * 4):
                 current_volume = int((i + 1) * fade_step)
-                transport.denon_cmd(
-                    f"MV{current_volume:02}", expect_response=False
-                )
+                transport.denon_cmd(f"MV{current_volume:02}")
                 time.sleep(0.25)
         elif volume:
             for i in range(2):
-                transport.denon_cmd(
-                    f"MV{current_volume:02}", expect_response=False
-                )
+                transport.denon_cmd(f"MV{current_volume:02}")
                 time.sleep(0.5)
-
-
-
 
 
     def receive_event(self, transport, data):
@@ -682,6 +679,3 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
             for comp in self.get_player_components(transport.uid, values['pid']):
                 comp.meta['volume'] = values['level']
                 comp.save()
-
-
-
