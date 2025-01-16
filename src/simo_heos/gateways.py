@@ -281,7 +281,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
         if 'play_uri' in value:
             self.prepare_for_play(transport)
 
-            if 'volume' in value:
+            if value.get('volume') != None:
                 volume = value['volume']
                 if volume > 99:
                     volume = 99
