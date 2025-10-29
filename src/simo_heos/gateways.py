@@ -13,6 +13,7 @@ from .models import HeosDevice, HPlayer
 class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
     name = "DENON HEOS"
     config_form = BaseGatewayForm
+    auto_create = True
 
     periodic_tasks = (
         ('discover_devices', 60),
