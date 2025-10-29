@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simo-heos"
-version = "1.0.5"
+version = "1.0.6"
 authors = [
-  { name="Simanas Venčkauskas", email="simanas@simo.io" },
+  { name="Simon V.", email="simon@simo.io" },
 ]
 description = "DENON HEOS integration for SIMO.io"
 readme = "README.md"
