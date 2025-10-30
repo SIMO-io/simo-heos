@@ -96,7 +96,7 @@ class HEOSDeviceTransporter:
                     try:
                         data = json.loads(response)
                     except:
-                        print(traceback.format_exc(), file=sys.stderr)
+                        #print(traceback.format_exc(), file=sys.stderr)
                         return
                     if data['heos']['message'].startswith('command under process'):
                         continue
