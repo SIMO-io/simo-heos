@@ -47,7 +47,7 @@ def discover_heos_devices(timeout=5):
                 if resp.status_code != 200:
                     continue
                 try:
-                    soup = BeautifulSoup(resp.content, 'lxml')
+                    soup = BeautifulSoup(resp.content, features='xml')
                 except:
                     continue
                 try:

@@ -2,7 +2,6 @@ import sys, traceback, time, threading
 from collections import OrderedDict
 from simo.core.gateways import BaseObjectCommandsGatewayHandler
 from simo.core.forms import BaseGatewayForm
-from simo.core.middleware import drop_current_instance
 from simo.core.models import Component
 from simo.core.utils.helpers import get_self_ip
 from .utils import discover_heos_devices
@@ -72,7 +71,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                 # It seems smart, but that's definitely not the most reliable
                 # way of communication. We prefer keeping things separated
                 # the way they naturally are.
-                if player_info['ip'] != heos_device.ip:
+                if player_info.get('ip') != heos_device.ip:
                     continue
                 player, new = HPlayer.objects.update_or_create(
                     device=heos_device, pid=player_info['pid'],
@@ -140,7 +139,7 @@ class HEOSGatewayHandler(BaseObjectCommandsGatewayHandler):
                     try:
                         self.update_library(transport, player)
                     except:
-                        print(traceback.format_exc(), file=sys.stderr)
+                        #print(traceback.format_exc(), file=sys.stderr)
                         continue
                 continue
             transport.authorize(credentials['un'], credentials['pw'])
