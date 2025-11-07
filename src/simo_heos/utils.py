@@ -56,7 +56,6 @@ def discover_heos_devices(timeout=5):
                     device['name'] = soup.findAll('friendlyname')[
                         0].text.strip()
                 except:
-                    print(traceback.format_exc(), file=sys.stderr)
                     continue
                 fully_discovered.append(device)
 
